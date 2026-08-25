@@ -8,9 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.schemas import DatasetListResponse, DatasetResponse, UploadResponse
+from app.schemas import (
+    DatasetListResponse,
+    DatasetResponse,
+    ProfileResponse,
+    UploadResponse,
+)
 from app.services.dataset_service import dataset_service
-from app.utils.exceptions import FileValidationError
+from app.utils.exceptions import DatasetNotFoundError, FileValidationError
 from app.utils.file_utils import (
     ensure_upload_dir,
     generate_unique_filename,
@@ -139,16 +144,49 @@ async def get_dataset_profile(
     session_id: Annotated[str, Header(alias="X-Session-ID")],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Return an owned dataset's profile or its not-yet-profiled state."""
+    """Return a previously generated profile for an owned dataset."""
     user = await dataset_service.get_or_create_user(db, session_id)
     dataset = await dataset_service.get_dataset_by_id(db, dataset_id, user.id)
     if dataset.profile is None:
-        return success_response(
-            {
-                "profile": None,
-                "message": (
-                    "Dataset not yet profiled. Call the inspect endpoint."
-                ),
-            }
+        raise DatasetNotFoundError(
+            "Dataset has not been inspected yet. POST to /inspect first."
         )
-    return success_response({"profile": dataset.profile})
+
+    response = ProfileResponse.model_validate(
+        {
+            "dataset_id": dataset.id,
+            "filename": dataset.filename,
+            "profile": dataset.profile,
+        }
+    )
+    return success_response(response)
+
+
+@router.post("/{dataset_id}/inspect")
+async def inspect_dataset(
+    dataset_id: int,
+    session_id: Annotated[str, Header(alias="X-Session-ID")],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Generate and cache a comprehensive profile for an owned dataset."""
+    user = await dataset_service.get_or_create_user(db, session_id)
+    dataset = await dataset_service.inspect_and_profile(
+        db,
+        dataset_id,
+        user.id,
+    )
+    response = ProfileResponse.model_validate(
+        {
+            "dataset_id": dataset.id,
+            "filename": dataset.filename,
+            "profile": dataset.profile,
+        }
+    )
+    basic_info = response.profile.basic_info
+    logger.info(
+        "Dataset %s profiled successfully — %s rows, %s columns",
+        dataset.id,
+        basic_info["row_count"],
+        basic_info["column_count"],
+    )
+    return success_response(response)

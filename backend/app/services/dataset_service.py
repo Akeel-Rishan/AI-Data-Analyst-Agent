@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Dataset, User
+from app.services.inspector_service import InspectorService
 from app.utils.exceptions import DatasetNotFoundError
 from app.utils.logger import get_logger
 
@@ -140,6 +141,28 @@ class DatasetService:
         await db.refresh(dataset)
         logger.info("Updated profile for dataset %s", dataset_id)
         return dataset
+
+    async def inspect_and_profile(
+        self,
+        db: AsyncSession,
+        dataset_id: int,
+        user_id: int,
+    ) -> Dataset:
+        """Inspect an owned dataset and persist its generated profile."""
+        dataset = await self.get_dataset_by_id(db, dataset_id, user_id)
+        inspector = InspectorService()
+        profile = await inspector.inspect_dataset(
+            dataset.file_path,
+            dataset.file_type or "",
+        )
+        basic_info = profile["basic_info"]
+        return await self.update_dataset_profile(
+            db=db,
+            dataset_id=dataset.id,
+            profile=profile,
+            row_count=int(basic_info["row_count"]),
+            column_count=int(basic_info["column_count"]),
+        )
 
 
 dataset_service = DatasetService()
