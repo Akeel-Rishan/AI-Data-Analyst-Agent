@@ -52,12 +52,15 @@ async def test_root(client: AsyncClient) -> None:
     assert "docs" in response.json()
 
 
-async def test_dataset_stub(client: AsyncClient) -> None:
-    """Verify the dataset listing placeholder responds successfully."""
-    response = await client.get("/api/datasets")
+async def test_dataset_endpoint(client: AsyncClient) -> None:
+    """Verify the dataset listing endpoint responds successfully."""
+    response = await client.get(
+        "/api/datasets",
+        headers={"X-Session-ID": "health-test-session"},
+    )
 
     assert response.status_code == 200
-    assert "message" in response.json()
+    assert "datasets" in response.json()["data"]
 
 
 async def test_404_unknown_route(client: AsyncClient) -> None:
