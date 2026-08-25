@@ -1,18 +1,27 @@
 """FastAPI application entry point."""
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.database import create_all_tables
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Manage application startup and shutdown lifecycle events."""
-    print(f"Starting {settings.APP_NAME}...")
+    logger.info("Starting %s...", settings.APP_NAME)
+    Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+    await create_all_tables()
+    logger.info("Database connected successfully")
     yield
 
 
