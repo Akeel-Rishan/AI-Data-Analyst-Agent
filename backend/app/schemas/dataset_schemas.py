@@ -3,7 +3,9 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.services.cleaner_service import CleaningOperation
 
 
 class DatasetResponse(BaseModel):
@@ -93,5 +95,64 @@ class ProfileResponse(BaseModel):
     dataset_id: int
     filename: str
     profile: DatasetProfile
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CleaningConfigRequest(BaseModel):
+    """User-selected cleaning operations and preview configuration."""
+
+    operations: list[str]
+    null_threshold_pct: float = Field(default=70.0, ge=0, le=100)
+    dry_run: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("operations")
+    @classmethod
+    def validate_operations(cls, operations: list[str]) -> list[str]:
+        """Reject operation names that the cleaner does not support."""
+        valid_options = [operation.value for operation in CleaningOperation]
+        invalid = [item for item in operations if item not in valid_options]
+        if invalid:
+            raise ValueError(
+                f"Invalid cleaning operation(s): {', '.join(invalid)}. "
+                f"Valid options: {', '.join(valid_options)}"
+            )
+        return operations
+
+
+class CleaningChangeResponse(BaseModel):
+    """Public report for one attempted cleaning operation."""
+
+    operation: str
+    description: str
+    affected_columns: list[str]
+    rows_affected: int
+    columns_affected: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CleaningResultResponse(BaseModel):
+    """Shape changes and detailed results from a cleaning request."""
+
+    dry_run: bool
+    original_shape: dict[str, int]
+    cleaned_shape: dict[str, int]
+    rows_removed: int
+    columns_removed: int
+    changes: list[CleaningChangeResponse]
+    summary: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CleaningSuggestionsResponse(BaseModel):
+    """Profile-derived cleaning recommendations and rough impact counts."""
+
+    suggested_operations: list[str]
+    reasons: dict[str, str]
+    estimated_changes: dict[str, Any]
 
     model_config = ConfigDict(from_attributes=True)

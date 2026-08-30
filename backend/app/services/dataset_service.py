@@ -7,8 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Dataset, User
+from app.services.cleaner_service import (
+    CleanerService,
+    CleaningConfig,
+    CleaningOperation,
+)
 from app.services.inspector_service import InspectorService
-from app.utils.exceptions import DatasetNotFoundError
+from app.utils.exceptions import AnalysisError, DatasetNotFoundError
 from app.utils.logger import get_logger
 
 
@@ -163,6 +168,138 @@ class DatasetService:
             row_count=int(basic_info["row_count"]),
             column_count=int(basic_info["column_count"]),
         )
+
+    async def apply_cleaning(
+        self,
+        db: AsyncSession,
+        dataset_id: int,
+        user_id: int,
+        config: CleaningConfig,
+    ) -> dict[str, Any]:
+        """Clean an owned dataset and refresh its cached profile when applied."""
+        dataset = await self.get_dataset_by_id(db, dataset_id, user_id)
+        cleaner = CleanerService()
+        result = await cleaner.clean_dataset(
+            dataset.file_path,
+            dataset.file_type or "",
+            config,
+        )
+
+        if not config.dry_run:
+            inspector = InspectorService()
+            profile = await inspector.inspect_dataset(
+                dataset.file_path,
+                dataset.file_type or "",
+            )
+            basic_info = profile["basic_info"]
+            dataset.profile = profile
+            dataset.row_count = int(basic_info["row_count"])
+            dataset.column_count = int(basic_info["column_count"])
+            dataset.file_size = Path(dataset.file_path).stat().st_size
+            dataset.is_cleaned = True
+            await db.commit()
+            await db.refresh(dataset)
+            logger.info("Refreshed profile after cleaning dataset %s", dataset_id)
+
+        return result
+
+    async def get_cleaning_suggestions(
+        self,
+        db: AsyncSession,
+        dataset_id: int,
+        user_id: int,
+    ) -> dict[str, Any]:
+        """Recommend cleaning operations using an owned dataset's profile."""
+        dataset = await self.get_dataset_by_id(db, dataset_id, user_id)
+        if dataset.profile is None:
+            raise AnalysisError(
+                "Dataset must be inspected before getting cleaning suggestions"
+            )
+
+        profile = dataset.profile
+        basic_info = profile["basic_info"]
+        columns = profile["column_profiles"]
+        issues = profile["potential_issues"]
+        suggested: list[str] = []
+        reasons: dict[str, str] = {}
+
+        def add_suggestion(operation: CleaningOperation, reason: str) -> None:
+            """Add a recommendation once while retaining its explanation."""
+            if operation.value not in suggested:
+                suggested.append(operation.value)
+                reasons[operation.value] = reason
+
+        if basic_info.get("has_duplicates"):
+            add_suggestion(
+                CleaningOperation.REMOVE_DUPLICATES,
+                f"Dataset contains {basic_info.get('duplicate_count', 0)} "
+                "duplicate rows",
+            )
+        high_null_columns = [
+            item["name"]
+            for item in columns
+            if float(item.get("null_percentage", 0)) > 70
+        ]
+        if high_null_columns:
+            add_suggestion(
+                CleaningOperation.DROP_HIGH_NULL_COLUMNS,
+                "Some columns contain more than 70% missing values",
+            )
+        numeric_missing = [
+            item
+            for item in columns
+            if item.get("category") == "numeric" and item.get("null_count", 0)
+        ]
+        if numeric_missing:
+            add_suggestion(
+                CleaningOperation.IMPUTE_NUMERIC_MEDIAN,
+                "Numeric columns contain missing values",
+            )
+        categorical_missing = [
+            item
+            for item in columns
+            if item.get("category") == "categorical"
+            and item.get("null_count", 0)
+        ]
+        if categorical_missing:
+            add_suggestion(
+                CleaningOperation.IMPUTE_CATEGORICAL_MODE,
+                "Categorical columns contain missing values",
+            )
+        constant_warnings = [
+            issue for issue in issues if "zero variance (constant values)" in issue
+        ]
+        if constant_warnings:
+            add_suggestion(
+                CleaningOperation.REMOVE_CONSTANT_COLUMNS,
+                "The profile detected constant columns",
+            )
+
+        add_suggestion(
+            CleaningOperation.STRIP_WHITESPACE,
+            "Normalize leading and trailing whitespace in text values",
+        )
+        add_suggestion(
+            CleaningOperation.STANDARDIZE_COLUMN_NAMES,
+            "Normalize column names for reliable analysis",
+        )
+
+        return {
+            "suggested_operations": suggested,
+            "reasons": reasons,
+            "estimated_changes": {
+                "duplicate_rows": int(basic_info.get("duplicate_count", 0)),
+                "high_null_columns": len(high_null_columns),
+                "numeric_missing_values": sum(
+                    int(item.get("null_count", 0)) for item in numeric_missing
+                ),
+                "categorical_missing_values": sum(
+                    int(item.get("null_count", 0))
+                    for item in categorical_missing
+                ),
+                "constant_columns": len(constant_warnings),
+            },
+        }
 
 
 dataset_service = DatasetService()

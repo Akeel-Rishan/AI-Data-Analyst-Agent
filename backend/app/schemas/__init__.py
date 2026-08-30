@@ -1,6 +1,10 @@
 """Pydantic request and response schemas."""
 
 from .dataset_schemas import (
+    CleaningChangeResponse,
+    CleaningConfigRequest,
+    CleaningResultResponse,
+    CleaningSuggestionsResponse,
     ColumnProfile,
     DatasetListResponse,
     DatasetProfile,
@@ -10,6 +14,10 @@ from .dataset_schemas import (
 )
 
 __all__ = [
+    "CleaningChangeResponse",
+    "CleaningConfigRequest",
+    "CleaningResultResponse",
+    "CleaningSuggestionsResponse",
     "ColumnProfile",
     "DatasetListResponse",
     "DatasetProfile",

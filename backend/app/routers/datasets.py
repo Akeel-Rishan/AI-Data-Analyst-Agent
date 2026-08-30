@@ -9,11 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_db
 from app.schemas import (
+    CleaningConfigRequest,
+    CleaningResultResponse,
+    CleaningSuggestionsResponse,
     DatasetListResponse,
     DatasetResponse,
     ProfileResponse,
     UploadResponse,
 )
+from app.services.cleaner_service import CleaningConfig, CleaningOperation
 from app.services.dataset_service import dataset_service
 from app.utils.exceptions import DatasetNotFoundError, FileValidationError
 from app.utils.file_utils import (
@@ -188,5 +192,84 @@ async def inspect_dataset(
         dataset.id,
         basic_info["row_count"],
         basic_info["column_count"],
+    )
+    return success_response(response)
+
+
+@router.get("/{dataset_id}/cleaning-suggestions")
+async def get_cleaning_suggestions(
+    dataset_id: int,
+    session_id: Annotated[str, Header(alias="X-Session-ID")],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Return profile-derived cleaning recommendations for an owned dataset."""
+    user = await dataset_service.get_or_create_user(db, session_id)
+    suggestions = await dataset_service.get_cleaning_suggestions(
+        db,
+        dataset_id,
+        user.id,
+    )
+    response = CleaningSuggestionsResponse.model_validate(suggestions)
+    return success_response(response)
+
+
+@router.post("/{dataset_id}/clean")
+async def clean_dataset(
+    dataset_id: int,
+    config: CleaningConfigRequest,
+    session_id: Annotated[str, Header(alias="X-Session-ID")],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Apply selected cleaning operations to an owned dataset."""
+    user = await dataset_service.get_or_create_user(db, session_id)
+    cleaning_config = CleaningConfig(
+        operations=[CleaningOperation(item) for item in config.operations],
+        null_threshold_pct=config.null_threshold_pct,
+        dry_run=config.dry_run,
+    )
+    result = await dataset_service.apply_cleaning(
+        db,
+        dataset_id,
+        user.id,
+        cleaning_config,
+    )
+    response = CleaningResultResponse.model_validate(result)
+    logger.info(
+        "Dataset %s cleaned — %s rows removed, %s columns removed. "
+        "Dry run: %s",
+        dataset_id,
+        response.rows_removed,
+        response.columns_removed,
+        response.dry_run,
+    )
+    return success_response(response)
+
+
+@router.post("/{dataset_id}/clean/preview")
+async def preview_dataset_cleaning(
+    dataset_id: int,
+    config: CleaningConfigRequest,
+    session_id: Annotated[str, Header(alias="X-Session-ID")],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Preview selected cleaning operations without modifying the dataset."""
+    user = await dataset_service.get_or_create_user(db, session_id)
+    cleaning_config = CleaningConfig(
+        operations=[CleaningOperation(item) for item in config.operations],
+        null_threshold_pct=config.null_threshold_pct,
+        dry_run=True,
+    )
+    result = await dataset_service.apply_cleaning(
+        db,
+        dataset_id,
+        user.id,
+        cleaning_config,
+    )
+    response = CleaningResultResponse.model_validate(result)
+    logger.info(
+        "Dataset %s cleaning preview — %s rows, %s columns projected removed",
+        dataset_id,
+        response.rows_removed,
+        response.columns_removed,
     )
     return success_response(response)
